@@ -2183,6 +2183,7 @@
                           "tools/mcp/usage/pipedream-slack",
                           "tools/mcp/usage/pipedream-google-calendar",
                           "tools/mcp/usage/pipedream-linkedin",
+                          "tools/mcp/usage/schemagate",
                           "tools/mcp/usage/stagehand",
                           "tools/mcp/usage/stripe",
                           "tools/mcp/usage/supabase"

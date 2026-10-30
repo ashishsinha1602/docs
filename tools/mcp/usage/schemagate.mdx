@@ -1,0 +1,131 @@
+---
+title: schemagate MCP agent
+description: "Answer SQL questions with an agent that sees only the tables a question needs and the caller is allowed to read, using the schemagate MCP server over stdio."
+keywords: [mcp, schemagate, text-to-sql, sql, database, access control]
+---
+
+Connect an agent to the [schemagate MCP server](https://github.com/ashishsinha1602/schemagate). `select_schema` returns DDL for the few tables a question needs, filtered by the caller's roles. `run_query` runs one read-only `SELECT` and refuses tables the caller may not read.
+
+The example runs against schemagate's bundled demo schema (`--url demo`), a 42-object SQLite database, so no database setup is needed.
+
+```python schemagate_mcp.py
+import asyncio
+from textwrap import dedent
+
+from agno.agent import Agent
+from agno.models.openai import OpenAIResponses
+from agno.tools.mcp import MCPTools
+
+
+async def run_agent(message: str) -> None:
+    async with MCPTools(
+        command="uvx --from schemagate[mcp] schemagate-mcp --url demo",
+        include_tools=["select_schema", "run_query"],
+        timeout_seconds=120,
+    ) as schemagate_tools:
+        agent = Agent(
+            model=OpenAIResponses(id="gpt-5.2"),
+            tools=[schemagate_tools],
+            instructions=dedent("""\
+                Answer questions about the company database.
+
+                1. Call `select_schema` with the question, principal "okta:jdoe" and roles ["finance"].
+                2. Write one SQLite SELECT using only the tables in the returned `ddl`.
+                3. Call `run_query` with that SQL and the same principal and roles.
+                4. Answer from the returned rows.
+            """),
+            markdown=True,
+        )
+        await agent.aprint_response(message, stream=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(run_agent("Which customers owe us money?"))
+```
+
+## Run the Example
+
+<Steps>
+  <Snippet file="create-venv-step.mdx" />
+
+  <Step title="Install dependencies">
+    ```bash
+    uv pip install -U "agno[mcp]" openai
+    uvx --version
+    ```
+  </Step>
+
+  <Step title="Export your OpenAI API key">
+    ```bash
+    export OPENAI_API_KEY="your_openai_api_key_here"
+    ```
+  </Step>
+
+  <Step title="Run the agent">
+    Save the code above as `schemagate_mcp.py`, then run:
+
+    ```bash
+    python schemagate_mcp.py
+    ```
+  </Step>
+</Steps>
+
+To use your own database, replace `--url demo` with a SQLAlchemy URL, or pass it through `env={"SCHEMAGATE_DATABASE_URL": "postgresql://..."}` to keep credentials off the command line.
+
+## Available Tools
+
+| Tool | Purpose |
+|------|---------|
+| `select_schema` | Return DDL for the tables a question needs, filtered to the caller's roles |
+| `list_objects` | List every table and view the caller may see |
+| `describe_object` | Return the full DDL for one table or view |
+| `run_query` | Run one read-only `SELECT`, refusing tables outside the caller's scope |
+| `refresh_catalog` | Re-read the database structure after a migration or grant change |
+| `health` | Report server and catalog status |
+
+`answer`, `semantic_query`, and `deep_answer` use a model configured on the server. They are unavailable until the server has one, and `semantic_query` and `deep_answer` also need an explicit opt-in. The example keeps them out with `include_tools`.
+
+## Fix the Caller in Code
+
+The MCP tools take `principal` and `roles` as arguments, and the server trusts what the client sends. In the example above, the model supplies them. To set the caller from your application instead, call schemagate in-process from a custom tool:
+
+```python schemagate_tool.py
+from agno.agent import Agent
+from agno.models.openai import OpenAIResponses
+from schemagate import Principal
+from schemagate.demo_schema import demo_catalog
+
+catalog = demo_catalog()
+caller = Principal("okta:jdoe", roles={"finance"})
+
+
+def select_tables(question: str) -> str:
+    """Return the DDL for the tables needed to answer a question about the company database.
+
+    Args:
+        question: The user's question in plain language.
+    """
+    return catalog.select(question, top_k=6, principal=caller).prompt_fragment()
+
+
+agent = Agent(
+    model=OpenAIResponses(id="gpt-5.2"),
+    tools=[select_tables],
+    instructions="Call `select_tables` first. Write one SQLite query that uses only the tables it returns.",
+    markdown=True,
+)
+agent.print_response("Show salary by employee")
+```
+
+```bash
+uv pip install -U agno schemagate openai
+```
+
+`hr_compensation` is restricted to the `payroll` role in the demo schema, so it never appears in the DDL this caller's agent receives. Replace `demo_catalog()` with `Catalog().bootstrap("postgresql://...")` and `catalog.restrict(...)` for your own database.
+
+## Developer Resources
+
+- [schemagate repository](https://github.com/ashishsinha1602/schemagate)
+- [schemagate on PyPI](https://pypi.org/project/schemagate/)
+- [Stdio transport](/tools/mcp/transports/stdio)
+- [Creating your own tools](/tools/creating-tools/python-functions)
